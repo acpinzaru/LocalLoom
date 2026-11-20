@@ -1,0 +1,6 @@
+{
+  "name": "LocalLoom",
+  "description": "Open-source local-first cross-brand smart home hub replacing Smart Life, Tuya, and Xiaomi cloud apps with direct LAN, VPN, and proxy protocol control.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
