@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { DEFAULT_LOW_BATTERY_THRESHOLD } from '../core/batteryMonitor';
 import type {
   ComplianceControl,
   DevicePairingInput,
@@ -69,6 +70,13 @@ export function useHubState() {
       setHub(data.state);
       if (data.triggeredAutomations?.length > 0) {
         notify(`Triggered local automation: ${data.triggeredAutomations.join(', ')}`);
+      } else if (typeof patch.batteryPct === 'number' && data.device) {
+        const nextPct = data.device.state.batteryPct;
+        if (typeof nextPct === 'number' && nextPct <= DEFAULT_LOW_BATTERY_THRESHOLD) {
+          notify(`Low battery alert: ${data.device.name} is at ${nextPct}%.`);
+        } else if (nextPct === 100) {
+          notify(`Marked ${data.device.name} battery replaced (100%).`);
+        }
       }
     },
     [notify]

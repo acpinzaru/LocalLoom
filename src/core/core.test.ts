@@ -17,6 +17,11 @@ import {
   summarizeCompliance,
   validateNetworkConfig,
 } from './securityCompliance';
+import {
+  detectLowBatteryAlerts,
+  getBatteryHealthStatus,
+  simulateBatteryChange,
+} from './batteryMonitor';
 import { createInitialHubState } from './seedData';
 
 test('Tuya LAN v3.4 frame encodes and decodes with intact CRC32 checksum', () => {
@@ -176,3 +181,31 @@ test('Network validator catches malformed CIDR and proxy ports', () => {
   assert.ok(invalid.errors.subnetCidr);
   assert.ok(invalid.errors.proxyPort);
 });
+
+test('Battery monitor classifies health tiers and detects low-battery IoT sensor alerts sorted by severity', () => {
+  assert.equal(getBatteryHealthStatus(8, 20), 'critical');
+  assert.equal(getBatteryHealthStatus(16, 20), 'low');
+  assert.equal(getBatteryHealthStatus(21, 20), 'normal');
+  assert.equal(simulateBatteryChange(5, -20), 0);
+  assert.equal(simulateBatteryChange(95, 20), 100);
+
+  const state = createInitialHubState();
+  const alerts = detectLowBatteryAlerts(state.devices, 20);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].deviceId, 'dev-aqara-hall-motion');
+  assert.equal(alerts[0].batteryPct, 16);
+  assert.equal(alerts[0].severity, 'low');
+
+  // When a second sensor drops to 9%, it should sort ahead as critical
+  const drainedDevices = state.devices.map((d) =>
+    d.id === 'dev-xiaomi-balcony-sensor'
+      ? { ...d, state: { ...d.state, batteryPct: 9 } }
+      : d
+  );
+  const twoAlerts = detectLowBatteryAlerts(drainedDevices, 20);
+  assert.equal(twoAlerts.length, 2);
+  assert.equal(twoAlerts[0].deviceId, 'dev-xiaomi-balcony-sensor');
+  assert.equal(twoAlerts[0].severity, 'critical');
+  assert.equal(twoAlerts[1].deviceId, 'dev-aqara-hall-motion');
+});
+

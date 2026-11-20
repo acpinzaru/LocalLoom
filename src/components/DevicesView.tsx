@@ -1,6 +1,12 @@
-import React, { useMemo, useState } from 'react';
-import { Search } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { BatteryWarning, Search, X } from 'lucide-react';
 import { DeviceCard } from './DeviceCard';
+import {
+  DEFAULT_LOW_BATTERY_THRESHOLD,
+  detectLowBatteryAlerts,
+  getBatteryPoweredDevices,
+  isBatteryPoweredDevice,
+} from '../core/batteryMonitor';
 import type { EnrichedHubState } from '../hooks/useHubState';
 import type { SmartDeviceState } from '../core/types';
 
@@ -9,6 +15,7 @@ interface DevicesViewProps {
   onUpdateDeviceState: (deviceId: string, patch: Partial<SmartDeviceState>) => Promise<void>;
   onRemoveDevice: (deviceId: string, deviceName: string) => Promise<void>;
   onOpenPairModal: () => void;
+  onRefresh?: () => Promise<void>;
 }
 
 export const DevicesView: React.FC<DevicesViewProps> = ({
@@ -16,10 +23,67 @@ export const DevicesView: React.FC<DevicesViewProps> = ({
   onUpdateDeviceState,
   onRemoveDevice,
   onOpenPairModal,
+  onRefresh,
 }) => {
   const [selectedRoom, setSelectedRoom] = useState<string>('All');
   const [selectedBrand, setSelectedBrand] = useState<string>('All');
+  const [powerFilter, setPowerFilter] = useState<'all' | 'battery' | 'low'>('all');
+  const [lowBatteryThreshold, setLowBatteryThreshold] = useState<number>(
+    DEFAULT_LOW_BATTERY_THRESHOLD
+  );
+  const [dismissedAlerts, setDismissedAlerts] = useState<Record<string, number>>({});
   const [query, setQuery] = useState('');
+
+  // Keep real-time sensor telemetry synchronized with the local hub bridge
+  useEffect(() => {
+    if (!onRefresh) return;
+    const intervalId = window.setInterval(() => {
+      void onRefresh();
+    }, 15000);
+    return () => window.clearInterval(intervalId);
+  }, [onRefresh]);
+
+  const batteryDevices = useMemo(
+    () => getBatteryPoweredDevices(hub.devices),
+    [hub.devices]
+  );
+
+  const allLowBatteryAlerts = useMemo(
+    () => detectLowBatteryAlerts(hub.devices, lowBatteryThreshold),
+    [hub.devices, lowBatteryThreshold]
+  );
+
+  // Clear stale dismissal entries once a battery is replaced above threshold
+  useEffect(() => {
+    setDismissedAlerts((prev) => {
+      let changed = false;
+      const next: Record<string, number> = { ...prev };
+      for (const deviceId of Object.keys(next)) {
+        const device = hub.devices.find((d) => d.id === deviceId);
+        const pct = device?.state.batteryPct;
+        if (pct === undefined || pct > lowBatteryThreshold) {
+          delete next[deviceId];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [hub.devices, lowBatteryThreshold]);
+
+  // Show alert unless dismissed at the same or higher battery level (re-triggers if it drops further)
+  const activeLowBatteryAlerts = useMemo(
+    () =>
+      allLowBatteryAlerts.filter((alert) => {
+        const dismissedAt = dismissedAlerts[alert.deviceId];
+        if (dismissedAt === undefined) return true;
+        return alert.batteryPct < dismissedAt;
+      }),
+    [allLowBatteryAlerts, dismissedAlerts]
+  );
+
+  const hasCriticalBatteryAlert = activeLowBatteryAlerts.some(
+    (alert) => alert.severity === 'critical'
+  );
 
   const rooms = useMemo(() => {
     const unique = Array.from(new Set(hub.devices.map((d) => d.room)));
@@ -36,6 +100,13 @@ export const DevicesView: React.FC<DevicesViewProps> = ({
     return hub.devices.filter((d) => {
       if (selectedRoom !== 'All' && d.room !== selectedRoom) return false;
       if (selectedBrand !== 'All' && d.brand !== selectedBrand) return false;
+      if (powerFilter === 'battery' && !isBatteryPoweredDevice(d)) return false;
+      if (
+        powerFilter === 'low' &&
+        (!isBatteryPoweredDevice(d) || (d.state.batteryPct as number) > lowBatteryThreshold)
+      ) {
+        return false;
+      }
       if (q) {
         return (
           d.name.toLowerCase().includes(q) ||
@@ -47,7 +118,7 @@ export const DevicesView: React.FC<DevicesViewProps> = ({
       }
       return true;
     });
-  }, [hub.devices, selectedRoom, selectedBrand, query]);
+  }, [hub.devices, selectedRoom, selectedBrand, powerFilter, lowBatteryThreshold, query]);
 
   const totalWatts = useMemo(
     () =>
@@ -60,7 +131,6 @@ export const DevicesView: React.FC<DevicesViewProps> = ({
 
   const activeDevicesCount = hub.devices.filter((d) => d.state.power).length;
   const cloudBlockedCount = hub.devices.filter((d) => d.cloudBlocked).length;
-  const replacedAppsCount = new Set(hub.devices.map((d) => d.replacesApp)).size;
 
   return (
     <div className="space-y-6">
@@ -75,7 +145,7 @@ export const DevicesView: React.FC<DevicesViewProps> = ({
             {hub.devices.length}
           </p>
           <p className="mt-1 text-xs text-slate-500 tabular-nums dark:text-slate-400">
-            {activeDevicesCount} powered on · {replacedAppsCount} vendor apps replaced
+            {activeDevicesCount} powered on · {batteryDevices.length} battery sensors
           </p>
         </div>
 
@@ -111,6 +181,122 @@ export const DevicesView: React.FC<DevicesViewProps> = ({
           </p>
         </div>
       </section>
+
+      {/* Low-Battery Notifications Panel */}
+      {activeLowBatteryAlerts.length > 0 && (
+        <section
+          role="alert"
+          aria-live="assertive"
+          data-testid="low-battery-notifications"
+          className={`rounded-xl border p-4 sm:p-5 ${
+            hasCriticalBatteryAlert
+              ? 'border-rose-200 bg-rose-50/75 dark:border-rose-900/60 dark:bg-rose-950/30'
+              : 'border-amber-200 bg-amber-50/75 dark:border-amber-900/60 dark:bg-amber-950/30'
+          }`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <BatteryWarning
+                className={`h-4 w-4 shrink-0 ${
+                  hasCriticalBatteryAlert
+                    ? 'text-rose-700 dark:text-rose-400'
+                    : 'text-amber-700 dark:text-amber-400'
+                }`}
+                aria-hidden="true"
+              />
+              <h2
+                className={`text-sm font-semibold ${
+                  hasCriticalBatteryAlert
+                    ? 'text-rose-950 dark:text-rose-100'
+                    : 'text-amber-950 dark:text-amber-100'
+                }`}
+              >
+                {activeLowBatteryAlerts.length === 1
+                  ? 'Low-Battery Sensor Notification'
+                  : `Low-Battery Sensor Notifications (${activeLowBatteryAlerts.length})`}
+              </h2>
+            </div>
+            <span className="font-mono text-xs text-slate-600 tabular-nums dark:text-slate-300">
+              Alert threshold ≤ {lowBatteryThreshold}%
+            </span>
+          </div>
+
+          <ul className="mt-3 divide-y divide-amber-200/70 dark:divide-amber-900/40">
+            {activeLowBatteryAlerts.map((alert) => (
+              <li
+                key={alert.deviceId}
+                data-testid={`low-battery-alert-${alert.deviceId}`}
+                className="flex flex-col gap-3 py-2.5 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                    <span
+                      className={`font-semibold ${
+                        alert.severity === 'critical'
+                          ? 'text-rose-800 dark:text-rose-300'
+                          : 'text-amber-900 dark:text-amber-300'
+                      }`}
+                    >
+                      {alert.severity === 'critical' ? 'Critical Battery' : 'Low Battery'}
+                    </span>
+                    <span aria-hidden="true" className="text-slate-400">·</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">
+                      {alert.deviceName}
+                    </span>
+                    <span aria-hidden="true" className="text-slate-400">·</span>
+                    <span className="text-slate-600 dark:text-slate-300">{alert.room}</span>
+                    <span aria-hidden="true" className="text-slate-400">·</span>
+                    <span className="font-mono font-semibold text-slate-900 tabular-nums dark:text-slate-100">
+                      {alert.batteryPct}%
+                      {alert.batteryVoltageMv !== undefined
+                        ? ` (${(alert.batteryVoltageMv / 1000).toFixed(2)} V)`
+                        : ''}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-xs text-slate-700 dark:text-slate-300">
+                    {alert.message}
+                  </p>
+                </div>
+
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void onUpdateDeviceState(alert.deviceId, { batteryPct: 100 })}
+                    className="min-h-[36px] rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-900 transition-colors hover:bg-slate-50 whitespace-nowrap dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
+                  >
+                    Mark Replaced
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedRoom('All');
+                      setSelectedBrand('All');
+                      setPowerFilter('all');
+                      setQuery(alert.deviceName);
+                    }}
+                    className="min-h-[36px] rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-black/5 whitespace-nowrap dark:text-slate-300 dark:hover:bg-white/10"
+                  >
+                    Focus Sensor
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Dismiss low battery notification for ${alert.deviceName}`}
+                    onClick={() =>
+                      setDismissedAlerts((prev) => ({
+                        ...prev,
+                        [alert.deviceId]: alert.batteryPct,
+                      }))
+                    }
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-black/5 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-slate-100"
+                  >
+                    <X className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {/* Filter & Search Toolbar */}
       <section className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -153,6 +339,35 @@ export const DevicesView: React.FC<DevicesViewProps> = ({
               </option>
             ))}
           </select>
+
+          <label className="sr-only" htmlFor="power-source-filter">
+            Filter by battery status
+          </label>
+          <select
+            id="power-source-filter"
+            value={powerFilter}
+            onChange={(e) => setPowerFilter(e.target.value as 'all' | 'battery' | 'low')}
+            className="min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+          >
+            <option value="all">All Power Sources</option>
+            <option value="battery">Battery Sensors ({batteryDevices.length})</option>
+            <option value="low">Low Battery ({allLowBatteryAlerts.length})</option>
+          </select>
+
+          <label className="sr-only" htmlFor="battery-threshold-select">
+            Low battery alert threshold
+          </label>
+          <select
+            id="battery-threshold-select"
+            value={lowBatteryThreshold}
+            onChange={(e) => setLowBatteryThreshold(Number(e.target.value))}
+            className="min-h-[40px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+          >
+            <option value={15}>Alert ≤ 15%</option>
+            <option value={20}>Alert ≤ 20%</option>
+            <option value={25}>Alert ≤ 25%</option>
+            <option value={30}>Alert ≤ 30%</option>
+          </select>
         </div>
 
         <div className="flex items-center gap-2.5">
@@ -183,7 +398,7 @@ export const DevicesView: React.FC<DevicesViewProps> = ({
             No matching local hardware found
           </h3>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Clear your room or search filter, or pair a new Tuya, Smart Life, Xiaomi, or Matter endpoint.
+            Clear your room, battery, or search filter, or pair a new Tuya, Smart Life, Xiaomi, or Matter endpoint.
           </p>
           <div className="mt-5 flex items-center justify-center gap-3">
             <button
@@ -191,6 +406,7 @@ export const DevicesView: React.FC<DevicesViewProps> = ({
               onClick={() => {
                 setSelectedRoom('All');
                 setSelectedBrand('All');
+                setPowerFilter('all');
                 setQuery('');
               }}
               className="min-h-[40px] rounded-lg border border-slate-200 px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
@@ -215,6 +431,7 @@ export const DevicesView: React.FC<DevicesViewProps> = ({
             <DeviceCard
               key={device.id}
               device={device}
+              lowBatteryThreshold={lowBatteryThreshold}
               onUpdateState={onUpdateDeviceState}
               onRemove={onRemoveDevice}
             />

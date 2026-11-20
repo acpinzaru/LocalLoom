@@ -35,6 +35,8 @@ export interface SmartDeviceState {
   lux?: number;
   locked?: boolean;
   privacyShutterClosed?: boolean;
+  batteryPct?: number; // 0-100 for battery-powered sensors & locks
+  batteryVoltageMv?: number;
 }
 
 export interface SmartDevice {
@@ -86,7 +88,7 @@ export interface DiscoveredLanDevice {
 export interface AutomationTrigger {
   type: 'device-state' | 'threshold' | 'schedule';
   deviceId?: string;
-  property?: 'power' | 'motionDetected' | 'currentTempC' | 'aqi' | 'powerWatts';
+  property?: 'power' | 'motionDetected' | 'currentTempC' | 'aqi' | 'powerWatts' | 'batteryPct';
   operator?: 'eq' | 'gt' | 'lt';
   value?: boolean | number;
   cronLabel?: string;

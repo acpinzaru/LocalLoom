@@ -243,6 +243,7 @@ export default function App() {
                   onUpdateDeviceState={updateDeviceState}
                   onRemoveDevice={removeDevice}
                   onOpenPairModal={() => setPairModalOpen(true)}
+                  onRefresh={refetch}
                 />
               )}
               {activeTab === 'automations' && (

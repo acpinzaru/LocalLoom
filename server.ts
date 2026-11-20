@@ -1,6 +1,7 @@
 import express from 'express';
 import crypto from 'crypto';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import {
@@ -24,6 +25,10 @@ import {
   validateNetworkConfig,
 } from './src/core/securityCompliance';
 import {
+  clampBatteryPct,
+  DEFAULT_LOW_BATTERY_THRESHOLD,
+} from './src/core/batteryMonitor';
+import {
   createInitialHubState,
   DISCOVERABLE_LAN_POOL,
 } from './src/core/seedData';
@@ -39,17 +44,37 @@ import type {
 const STATE_FILE = path.resolve(process.cwd(), '.localloom-hub-state.json');
 
 function loadHubState(): HubStateSnapshot {
+  const baseline = createInitialHubState();
   try {
     if (fs.existsSync(STATE_FILE)) {
       const parsed = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8')) as HubStateSnapshot;
       if (Array.isArray(parsed.devices) && parsed.network && parsed.security) {
+        const baselineById = new Map(baseline.devices.map((d) => [d.id, d]));
+        parsed.devices = parsed.devices.map((d) => {
+          const seedMatch = baselineById.get(d.id);
+          if (
+            seedMatch &&
+            typeof seedMatch.state.batteryPct === 'number' &&
+            d.state.batteryPct === undefined
+          ) {
+            return {
+              ...d,
+              state: {
+                ...d.state,
+                batteryPct: seedMatch.state.batteryPct,
+                batteryVoltageMv: seedMatch.state.batteryVoltageMv,
+              },
+            };
+          }
+          return d;
+        });
         return parsed;
       }
     }
   } catch {
     // Fall back to deterministic initial state if file is unreadable
   }
-  return createInitialHubState();
+  return baseline;
 }
 
 let hubState: HubStateSnapshot = loadHubState();
@@ -110,6 +135,7 @@ function encryptMiioAesCbc(plaintext: string, tokenHex32: string): {
 
 async function startServer() {
   const app = express();
+  const httpServer = http.createServer(app);
   app.use(express.json({ limit: '1mb' }));
 
   // Hub state snapshot
@@ -189,8 +215,8 @@ async function startServer() {
             : input.category === 'power'
               ? { power: true, powerWatts: 32.5 }
               : input.category === 'security'
-                ? { power: true, locked: true, privacyShutterClosed: true }
-                : { power: true, motionDetected: false, lux: 60 },
+                ? { power: true, locked: true, privacyShutterClosed: true, batteryPct: 100, batteryVoltageMv: 6000 }
+                : { power: true, motionDetected: false, lux: 60, batteryPct: 100, batteryVoltageMv: 3050 },
     };
 
     hubState.devices = [newDevice, ...hubState.devices];
@@ -214,8 +240,19 @@ async function startServer() {
       return;
     }
 
+    const normalizedPatch =
+      typeof patch.batteryPct === 'number'
+        ? {
+            ...patch,
+            batteryPct: clampBatteryPct(patch.batteryPct),
+            batteryVoltageMv:
+              patch.batteryVoltageMv ??
+              Math.round(2650 + (clampBatteryPct(patch.batteryPct) / 100) * 400),
+          }
+        : patch;
+
     hubState.devices = hubState.devices.map((d) =>
-      d.id === id ? applyDeviceStatePatch(d, patch) : d
+      d.id === id ? applyDeviceStatePatch(d, normalizedPatch) : d
     );
 
     const triggeredNames: string[] = [];
@@ -229,14 +266,26 @@ async function startServer() {
       return rule;
     });
 
-    appendAudit({
-      category: 'device',
-      actor: 'Local Dispatch',
-      message: `Updated ${existing.name} (${Object.keys(patch).join(', ')})${
-        triggeredNames.length > 0 ? ` — triggered ${triggeredNames.join(', ')}` : ''
-      }.`,
-      protocolNote: `${existing.protocol} -> ${existing.ip}:${existing.port}`,
-    });
+    if (
+      typeof normalizedPatch.batteryPct === 'number' &&
+      normalizedPatch.batteryPct <= DEFAULT_LOW_BATTERY_THRESHOLD
+    ) {
+      appendAudit({
+        category: 'device',
+        actor: 'Battery Telemetry',
+        message: `Low-battery alert for "${existing.name}" (${normalizedPatch.batteryPct}% remaining).`,
+        protocolNote: `${existing.protocol} · ${existing.ip}`,
+      });
+    } else {
+      appendAudit({
+        category: 'device',
+        actor: 'Local Dispatch',
+        message: `Updated ${existing.name} (${Object.keys(normalizedPatch).join(', ')})${
+          triggeredNames.length > 0 ? ` — triggered ${triggeredNames.join(', ')}` : ''
+        }.`,
+        protocolNote: `${existing.protocol} -> ${existing.ip}:${existing.port}`,
+      });
+    }
     persistHubState();
     res.json({ triggeredAutomations: triggeredNames, state: buildEnrichedState() });
   });
@@ -550,8 +599,64 @@ async function startServer() {
 
   // Vite dev middleware or production static assets
   if (process.env.NODE_ENV !== 'production') {
+    const hmrDisabled = process.env.DISABLE_HMR === 'true';
+
+    if (hmrDisabled) {
+      // Vite 8 still emits /@vite/client in middlewareMode even when HMR is disabled,
+      // which attempts a failing WebSocket connection to port 24678. Serve a clean
+      // WebSocket-free shim that preserves CSS updateStyle/removeStyle and hot stubs.
+      app.get('/@vite/client', (_req, res) => {
+        res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+        res.send(`
+const sheetsMap = new Map();
+export function updateStyle(id, content) {
+  let style = sheetsMap.get(id);
+  if (!style) {
+    style = document.createElement('style');
+    style.setAttribute('type', 'text/css');
+    style.setAttribute('data-vite-dev-id', id);
+    style.textContent = content;
+    document.head.appendChild(style);
+    sheetsMap.set(id, style);
+  } else {
+    style.textContent = content;
+  }
+}
+export function removeStyle(id) {
+  const style = sheetsMap.get(id);
+  if (style) {
+    document.head.removeChild(style);
+    sheetsMap.delete(id);
+  }
+}
+export function createHotContext() {
+  return {
+    data: {},
+    accept() {},
+    acceptExports() {},
+    dispose() {},
+    prune() {},
+    decline() {},
+    invalidate() {},
+    on() {},
+    off() {},
+    send() {},
+  };
+}
+export function injectQuery(url) {
+  return url;
+}
+export class ErrorOverlay extends HTMLElement {}
+`);
+      });
+    }
+
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: hmrDisabled ? false : { server: httpServer },
+        ws: hmrDisabled ? false : { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -564,7 +669,7 @@ async function startServer() {
   }
 
   const port = Number(process.env.PORT) || 3000;
-  app.listen(port, '0.0.0.0', () => {
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`LocalLoom local smart home hub listening on http://0.0.0.0:${port}`);
   });
 }

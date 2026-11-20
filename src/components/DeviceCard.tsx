@@ -1,6 +1,10 @@
 import React, { useState } from 'react';
 import {
   Activity,
+  BatteryFull,
+  BatteryLow,
+  BatteryMedium,
+  BatteryWarning,
   Lock,
   Minus,
   PlugZap,
@@ -13,17 +17,24 @@ import {
   Unlock,
   Wind,
 } from 'lucide-react';
+import {
+  DEFAULT_LOW_BATTERY_THRESHOLD,
+  getBatteryHealthStatus,
+  simulateBatteryChange,
+} from '../core/batteryMonitor';
 import { getProtocolLabel } from '../core/protocols';
 import type { SmartDevice, SmartDeviceState } from '../core/types';
 
 interface DeviceCardProps {
   device: SmartDevice;
+  lowBatteryThreshold?: number;
   onUpdateState: (deviceId: string, patch: Partial<SmartDeviceState>) => Promise<void>;
   onRemove: (deviceId: string, deviceName: string) => Promise<void>;
 }
 
 export const DeviceCard: React.FC<DeviceCardProps> = ({
   device,
+  lowBatteryThreshold = DEFAULT_LOW_BATTERY_THRESHOLD,
   onUpdateState,
   onRemove,
 }) => {
@@ -63,7 +74,24 @@ export const DeviceCard: React.FC<DeviceCardProps> = ({
     }
   };
 
+  const renderBatteryIcon = (pct: number, status: 'critical' | 'low' | 'normal') => {
+    if (status === 'critical') {
+      return <BatteryWarning className="h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" aria-hidden="true" />;
+    }
+    if (status === 'low') {
+      return <BatteryLow className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />;
+    }
+    if (pct <= 65) {
+      return <BatteryMedium className="h-4 w-4 shrink-0 text-teal-700 dark:text-teal-400" aria-hidden="true" />;
+    }
+    return <BatteryFull className="h-4 w-4 shrink-0 text-teal-700 dark:text-teal-400" aria-hidden="true" />;
+  };
+
   const isActive = device.state.power;
+  const hasBattery = typeof device.state.batteryPct === 'number';
+  const batteryPct = hasBattery ? (device.state.batteryPct as number) : null;
+  const batteryStatus =
+    batteryPct !== null ? getBatteryHealthStatus(batteryPct, lowBatteryThreshold) : null;
 
   return (
     <article
@@ -258,7 +286,17 @@ export const DeviceCard: React.FC<DeviceCardProps> = ({
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Ambient Illuminance <span className="font-mono tabular-nums">{device.state.lux ?? 0} lx</span>
+                  {device.state.currentTempC !== undefined ? (
+                    <span className="font-mono tabular-nums">
+                      {device.state.currentTempC.toFixed(1)}°C
+                      {device.state.humidityPct !== undefined ? ` · ${device.state.humidityPct}% RH` : ''}
+                      {device.state.lux !== undefined ? ` · ${device.state.lux} lx` : ''}
+                    </span>
+                  ) : (
+                    <>
+                      Ambient Illuminance <span className="font-mono tabular-nums">{device.state.lux ?? 0} lx</span>
+                    </>
+                  )}
                 </p>
                 <p className="mt-1 text-sm font-medium text-slate-900 dark:text-slate-100">
                   {device.state.motionDetected ? 'Motion Detected' : 'Area Clear'}
@@ -294,6 +332,103 @@ export const DeviceCard: React.FC<DeviceCardProps> = ({
                 >
                   {device.state.locked ? 'Unlock' : 'Lock Now'}
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/* Real-time Battery Percentage Indicator for Supported Battery-Powered IoT Sensors & Locks */}
+          {batteryPct !== null && batteryStatus !== null && (
+            <div
+              className={`rounded-lg border p-3 ${
+                batteryStatus === 'critical'
+                  ? 'border-rose-200 bg-rose-50/70 dark:border-rose-900/60 dark:bg-rose-950/30'
+                  : batteryStatus === 'low'
+                    ? 'border-amber-200 bg-amber-50/70 dark:border-amber-900/60 dark:bg-amber-950/30'
+                    : 'border-slate-200/80 bg-slate-50/70 dark:border-slate-800 dark:bg-slate-800/40'
+              }`}
+              data-testid={`battery-indicator-${device.id}`}
+            >
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  {renderBatteryIcon(batteryPct, batteryStatus)}
+                  <span
+                    className={`font-medium ${
+                      batteryStatus === 'critical'
+                        ? 'text-rose-800 dark:text-rose-300'
+                        : batteryStatus === 'low'
+                          ? 'text-amber-900 dark:text-amber-300'
+                          : 'text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    {batteryStatus === 'critical'
+                      ? 'Critical Battery'
+                      : batteryStatus === 'low'
+                        ? 'Low Battery'
+                        : 'Battery Healthy'}
+                  </span>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5 font-mono tabular-nums">
+                  <span
+                    className={`font-semibold ${
+                      batteryStatus === 'critical'
+                        ? 'text-rose-800 dark:text-rose-300'
+                        : batteryStatus === 'low'
+                          ? 'text-amber-900 dark:text-amber-300'
+                          : 'text-slate-900 dark:text-slate-100'
+                    }`}
+                    data-testid={`battery-pct-${device.id}`}
+                  >
+                    {batteryPct}%
+                  </span>
+                  {device.state.batteryVoltageMv !== undefined && (
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      · {(device.state.batteryVoltageMv / 1000).toFixed(2)} V
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div
+                role="progressbar"
+                aria-label={`Battery level for ${device.name}`}
+                aria-valuenow={batteryPct}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-200/90 dark:bg-slate-700/80"
+              >
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    batteryStatus === 'critical'
+                      ? 'bg-rose-600 dark:bg-rose-500'
+                      : batteryStatus === 'low'
+                        ? 'bg-amber-600 dark:bg-amber-500'
+                        : 'bg-teal-700 dark:bg-teal-500'
+                  }`}
+                  style={{ width: `${batteryPct}%` }}
+                />
+              </div>
+
+              <div className="mt-2.5 flex items-center justify-between gap-2 text-[11px]">
+                <button
+                  type="button"
+                  disabled={busy || batteryPct <= 0}
+                  onClick={() => runPatch({ batteryPct: simulateBatteryChange(batteryPct, -15) })}
+                  aria-label={`Simulate 15% battery drain for ${device.name}`}
+                  className="rounded px-2 py-1 font-medium text-slate-600 transition-colors hover:bg-slate-200/70 hover:text-slate-900 disabled:opacity-40 dark:text-slate-400 dark:hover:bg-slate-700/70 dark:hover:text-slate-100"
+                >
+                  Drain -15%
+                </button>
+                {batteryPct < 100 && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => runPatch({ batteryPct: 100 })}
+                    aria-label={`Mark battery replaced for ${device.name}`}
+                    className="rounded px-2 py-1 font-medium text-teal-800 transition-colors hover:bg-teal-100/80 dark:text-teal-300 dark:hover:bg-teal-950/60"
+                  >
+                    Replace (100%)
+                  </button>
+                )}
               </div>
             </div>
           )}
