@@ -47,9 +47,13 @@ export function applyDeviceStatePatch(
 
   // Keep realistic power wattage aligned with power & brightness states
   if (patch.power === false && nextState.powerWatts !== undefined) {
+    if (nextState.powerWatts >= 1) {
+      nextState.lastActivePowerWatts = nextState.powerWatts;
+    }
     nextState.powerWatts = Number((0.4).toFixed(1));
   } else if (patch.power === true && nextState.powerWatts !== undefined && nextState.powerWatts < 1) {
-    nextState.powerWatts = device.category === 'lighting' ? 12.6 : 48.0;
+    nextState.powerWatts =
+      nextState.lastActivePowerWatts ?? (device.category === 'lighting' ? 12.6 : 48.0);
   }
   if (patch.brightness !== undefined && device.category === 'lighting') {
     nextState.power = patch.brightness > 0;

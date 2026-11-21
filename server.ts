@@ -287,7 +287,8 @@ async function startServer() {
       });
     }
     persistHubState();
-    res.json({ triggeredAutomations: triggeredNames, state: buildEnrichedState() });
+    const updatedDevice = hubState.devices.find((d) => d.id === id);
+    res.json({ device: updatedDevice, triggeredAutomations: triggeredNames, state: buildEnrichedState() });
   });
 
   // Remove device

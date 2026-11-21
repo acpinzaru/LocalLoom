@@ -10,9 +10,11 @@ import {
   WifiOff,
   Workflow,
   X,
+  Zap,
 } from 'lucide-react';
 import { AutomationsView } from './components/AutomationsView';
 import { DevicesView } from './components/DevicesView';
+import { EnergyUsageView } from './components/EnergyUsageView';
 import { NetworkVpnView } from './components/NetworkVpnView';
 import { PairDeviceModal } from './components/PairDeviceModal';
 import { PluginsDocsView } from './components/PluginsDocsView';
@@ -21,7 +23,7 @@ import { SecurityPrivacyView } from './components/SecurityPrivacyView';
 import { useHubState } from './hooks/useHubState';
 import { useOnlineStatus } from './hooks/usePWAInstall';
 
-type NavTab = 'devices' | 'automations' | 'network' | 'security' | 'plugins';
+type NavTab = 'devices' | 'energy' | 'automations' | 'network' | 'security' | 'plugins';
 
 const NAV_ITEMS: {
   id: NavTab;
@@ -31,6 +33,7 @@ const NAV_ITEMS: {
   icon: React.ComponentType<{ className?: string }>;
 }[] = [
   { id: 'devices', label: 'Devices', mobileLabel: 'Devices', breadcrumb: 'Unified Devices', icon: Cpu },
+  { id: 'energy', label: 'Energy Usage', mobileLabel: 'Energy', breadcrumb: 'Energy Usage', icon: Zap },
   { id: 'automations', label: 'Automations', mobileLabel: 'Rules', breadcrumb: 'Local Automations', icon: Workflow },
   { id: 'network', label: 'Network & VPN', mobileLabel: 'Network', breadcrumb: 'Network & VPN', icon: Network },
   { id: 'security', label: 'Security & Privacy', mobileLabel: 'Security', breadcrumb: 'Security & Privacy', icon: ShieldCheck },
@@ -246,6 +249,14 @@ export default function App() {
                   onRefresh={refetch}
                 />
               )}
+              {activeTab === 'energy' && (
+                <EnergyUsageView
+                  hub={hub}
+                  darkMode={darkMode}
+                  onUpdateDeviceState={updateDeviceState}
+                  onOpenPairModal={() => setPairModalOpen(true)}
+                />
+              )}
               {activeTab === 'automations' && (
                 <AutomationsView
                   hub={hub}
@@ -283,7 +294,7 @@ export default function App() {
         aria-label="Mobile hub navigation"
         className="fixed right-0 bottom-0 left-0 z-30 border-t border-slate-200 bg-white/95 backdrop-blur-md pb-safe lg:hidden dark:border-slate-800 dark:bg-slate-900/95"
       >
-        <div className="grid h-16 grid-cols-5 items-center">
+        <div className="grid h-16 grid-cols-6 items-center">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -293,14 +304,14 @@ export default function App() {
                 type="button"
                 onClick={() => setActiveTab(item.id)}
                 aria-current={isActive ? 'page' : undefined}
-                className={`flex min-h-[44px] flex-col items-center justify-center gap-1 px-1 transition-colors ${
+                className={`flex min-h-[44px] flex-col items-center justify-center gap-1 px-0.5 transition-colors ${
                   isActive
                     ? 'text-teal-700 dark:text-teal-400'
                     : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
                 }`}
               >
-                <Icon className="h-5 w-5" aria-hidden="true" />
-                <span className="text-[11px] font-medium leading-none">{item.mobileLabel}</span>
+                <Icon className="h-4.5 w-4.5" aria-hidden="true" />
+                <span className="text-[10px] font-medium leading-none">{item.mobileLabel}</span>
               </button>
             );
           })}

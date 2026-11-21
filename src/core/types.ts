@@ -31,6 +31,7 @@ export interface SmartDeviceState {
   aqi?: number;
   fanSpeed?: 'auto' | 'silent' | 'medium' | 'high';
   powerWatts?: number;
+  lastActivePowerWatts?: number;
   motionDetected?: boolean;
   lux?: number;
   locked?: boolean;

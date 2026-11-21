@@ -22,6 +22,11 @@ import {
   getBatteryHealthStatus,
   simulateBatteryChange,
 } from './batteryMonitor';
+import {
+  buildEnergyDashboardReport,
+  clampTariffPerKwh,
+  getEnergyMeteredDevices,
+} from './energyAnalytics';
 import { createInitialHubState } from './seedData';
 
 test('Tuya LAN v3.4 frame encodes and decodes with intact CRC32 checksum', () => {
@@ -208,4 +213,35 @@ test('Battery monitor classifies health tiers and detects low-battery IoT sensor
   assert.equal(twoAlerts[0].severity, 'critical');
   assert.equal(twoAlerts[1].deviceId, 'dev-aqara-hall-motion');
 });
+
+test('Energy analytics generates daily, weekly, and monthly consumption trends with accurate live load and device scoping', () => {
+  const state = createInitialHubState();
+  const metered = getEnergyMeteredDevices(state.devices);
+  assert.equal(metered.length, 5);
+
+  const daily = buildEnergyDashboardReport(state.devices, 'daily', { tariffPerKwh: 0.25 });
+  const weekly = buildEnergyDashboardReport(state.devices, 'weekly', { tariffPerKwh: 0.25 });
+  const monthly = buildEnergyDashboardReport(state.devices, 'monthly', { tariffPerKwh: 0.25 });
+
+  assert.equal(daily.series.length, 24);
+  assert.equal(weekly.series.length, 7);
+  assert.equal(monthly.series.length, 12);
+  assert.equal(daily.currentLiveWatts, 132.9);
+  assert.ok(daily.totalKwh > 0);
+  assert.ok(weekly.totalKwh > daily.totalKwh * 5);
+  assert.ok(monthly.totalKwh > weekly.totalKwh * 20);
+  assert.equal(daily.deviceBreakdown[0].deviceId, 'dev-smartlife-plug-desk');
+
+  // Single-plug isolation matches exact live load and produces smaller total
+  const deskOnly = buildEnergyDashboardReport(state.devices, 'weekly', {
+    scope: 'dev-smartlife-plug-desk',
+    tariffPerKwh: 0.4,
+  });
+  assert.equal(deskOnly.deviceBreakdown.length, 1);
+  assert.equal(deskOnly.currentLiveWatts, 84.6);
+  assert.ok(deskOnly.totalKwh < weekly.totalKwh);
+  assert.equal(clampTariffPerKwh(-2), 0.01);
+  assert.equal(clampTariffPerKwh(99), 5);
+});
+
 
